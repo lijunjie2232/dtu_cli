@@ -1,0 +1,16 @@
+[package]
+name = "dtu_cli"
+version = "0.1.0"
+edition = "2021"
+description = "dtu command line: linux-like subcommands over dtu_core"
+
+[[bin]]
+name = "dtu"
+path = "src/main.rs"
+
+[dependencies]
+dtu_core = { path = "../dtu_core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "sync", "time"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
