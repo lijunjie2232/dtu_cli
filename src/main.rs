@@ -217,3 +217,110 @@ enum ConfigCmd {
     Path,
 }
 
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    if let Err(e) = app(cli).await {
+        eprintln!("dtu: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Every run owns the core: the services start here and stop when we exit.
+async fn app(cli: Cli) -> Result<(), String> {
+    let cfg = Config::load();
+    match cli.cmd {
+        // nothing to serve for these: they only touch files and stdout
+        Some(cmd @ (Cmd::Version | Cmd::Config { .. } | Cmd::Completions { .. })) => {
+            run(cmd, None, &cfg).await
+        }
+        None => {
+            let daemon = start(&cfg)?;
+            let out = shell(&daemon, &cfg).await;
+            daemon.stop();
+            out
+        }
+        Some(cmd) => {
+            let daemon = start(&cfg)?;
+            let out = run(cmd, Some(&daemon), &cfg).await;
+            daemon.stop();
+            out
+        }
+    }
+}
+
+/// Bring the core up in this process. Fails when another dtu app owns the data dir.
+fn start(cfg: &Config) -> Result<embed::Daemon, String> {
+    let daemon = embed::host(cfg.clone())?;
+    daemon.wait_ready()?;
+    Ok(daemon)
+}
+
+/// The little shell: the core is already serving, so commands just act on it.
+async fn shell(daemon: &embed::Daemon, cfg: &Config) -> Result<(), String> {
+    let st = &daemon.state;
+    println!("dtu {} · device {}", dtu_core::VERSION, st.id.id);
+    println!("  root    {}", guard::for_display(&st.root));
+    println!("  listen  0.0.0.0:{}", cfg.port);
+    println!("  api     127.0.0.1:{}", daemon.api_port());
+    println!("  commands: help · status · code · device · invite · push · pull · async · exit");
+    loop {
+        print!("dtu> ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        if std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
+            println!();
+            return Ok(());
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if matches!(line, "exit" | "quit" | "q") {
+            return Ok(());
+        }
+        let args = split_args(line)?;
+        match Cli::try_parse_from(std::iter::once("dtu".to_string()).chain(args)) {
+            Ok(parsed) => {
+                if let Some(cmd) = parsed.cmd {
+                    if let Err(e) = run(cmd, Some(daemon), cfg).await {
+                        println!("dtu: {e}");
+                    }
+                }
+            }
+            Err(e) => print!("{e}"),
+        }
+    }
+}
+
+/// Split a shell line into arguments; `"..."` keeps spaces together.
+fn split_args(line: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in line.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => cur.push(c),
+            (None, '"' | '\'') => quote = Some(c),
+            (None, c) if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            (None, c) => cur.push(c),
+        }
+    }
+    if quote.is_some() {
+        return Err("unterminated quote".into());
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    Ok(out)
+}
+
