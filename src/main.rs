@@ -481,3 +481,72 @@ async fn run(cmd: Cmd, daemon: Option<&embed::Daemon>, cfg: &Config) -> Result<(
             }
             Ok(())
         }
+        Cmd::Diff {
+            peer,
+            local,
+            remote,
+            code,
+            password,
+        } => {
+            let me = identity::Identity::load_or_create()?;
+            let trust = Store::load();
+            let target =
+                client::Target::resolve(cfg, &trust, &peer, code.as_deref(), password.as_deref())?;
+            let rows = client::diff(&target, &me, &local, &remote).await?;
+            for r in &rows {
+                println!(
+                    "{} {:<8} local={} remote={}",
+                    r.kind, r.rel, r.local, r.remote
+                );
+            }
+            println!("{} difference(s)", rows.len());
+            Ok(())
+        }
+        Cmd::Async {
+            peer,
+            local,
+            remote,
+            prefer,
+            dry_run,
+            delete,
+            code,
+            password,
+            parallel,
+        } => {
+            let me = Arc::new(identity::Identity::load_or_create()?);
+            let trust = Store::load();
+            let target =
+                client::Target::resolve(cfg, &trust, &peer, code.as_deref(), password.as_deref())?;
+            let plan = client::Plan {
+                parallel: parallel.unwrap_or(cfg.parallel).max(1),
+                resume: true,
+                verify: false,
+            };
+            let prefer = client::Prefer::parse(&prefer)?;
+            let delete = client::DeleteSide::parse(&delete)?;
+            for line in client::sync(
+                &target,
+                me,
+                &local,
+                &remote,
+                client::SyncOpts {
+                    prefer,
+                    dry_run,
+                    delete,
+                },
+                plan,
+            )
+            .await?
+            {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Cmd::Completions { shell } => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "dtu", &mut std::io::stdout());
+            Ok(())
+        }
+    }
+}
+
