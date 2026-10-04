@@ -324,3 +324,88 @@ fn split_args(line: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+async fn run(cmd: Cmd, daemon: Option<&embed::Daemon>, cfg: &Config) -> Result<(), String> {
+    let state = daemon.map(|d| d.state.clone());
+    let core = |what: &str| {
+        state
+            .clone()
+            .ok_or_else(|| format!("{what} needs the core, which is not running"))
+    };
+    match cmd {
+        Cmd::Version => {
+            let id = identity::Identity::load_or_create()?;
+            println!("dtu {}", dtu_core::VERSION);
+            println!("device {id}", id = id.id);
+            Ok(())
+        }
+        Cmd::Status => {
+            let st = core("status")?;
+            println!("device   {}", st.id.id);
+            println!("version  {} (proto v{})", dtu_core::VERSION, proto::PROTO);
+            println!("port     {}", st.cfg.port);
+            println!("root     {}", guard::for_display(&st.root));
+            println!("unlimit  {}", st.cfg.unlimit);
+            println!("trusted  {}", st.trust.lock().await.devices.len());
+            println!("pending  {}", st.invites.lock().await.len());
+            println!("uptime   {}s", identity::now().saturating_sub(st.started));
+            Ok(())
+        }
+        Cmd::Code { refresh, password } => {
+            let st = core("the pairing code")?;
+            if refresh {
+                // Refresh only rotates the code: the password survives unless
+                // explicitly cleared with an empty string.
+                let update = match password {
+                    None => None,
+                    Some(p) if p.is_empty() => Some(None),
+                    Some(p) => Some(Some(p)),
+                };
+                st.rotate_code(update).await;
+            }
+            let c = st.code.lock().await;
+            println!("code     {}", c.code);
+            if c.password.is_some() {
+                println!("password required");
+            }
+            if c.consumed {
+                println!("state    consumed (refresh to reuse)");
+            }
+            Ok(())
+        }
+        Cmd::Log { lines } => {
+            for line in audit::tail(lines) {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Cmd::Config { sub } => {
+            let mut cfg = Config::load();
+            match sub.unwrap_or(ConfigCmd::List) {
+                ConfigCmd::List => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?
+                    );
+                    Ok(())
+                }
+                ConfigCmd::Get { key } => match cfg.get(&key) {
+                    Some(v) => {
+                        println!("{v}");
+                        Ok(())
+                    }
+                    None => Err(format!("unknown key: {key}")),
+                },
+                ConfigCmd::Set { key, value } => {
+                    cfg.set(&key, &value)?;
+                    cfg.save().map_err(|e| format!("save config: {e}"))?;
+                    println!("{key} = {value}");
+                    Ok(())
+                }
+                ConfigCmd::Path => {
+                    println!("{}", cfg::data_dir().display());
+                    Ok(())
+                }
+            }
+        }
+        Cmd::Device { sub } => device_cmd(sub, cfg, core("device")?).await,
+        Cmd::Invite { sub } => invite_cmd(sub, cfg, core("invite")?).await,
