@@ -409,3 +409,75 @@ async fn run(cmd: Cmd, daemon: Option<&embed::Daemon>, cfg: &Config) -> Result<(
         }
         Cmd::Device { sub } => device_cmd(sub, cfg, core("device")?).await,
         Cmd::Invite { sub } => invite_cmd(sub, cfg, core("invite")?).await,
+        Cmd::Push {
+            peer,
+            paths,
+            to,
+            code,
+            password,
+            parallel,
+            no_resume,
+            trust_after,
+            trust_expires,
+            verify,
+            dry_run,
+        } => {
+            let me = Arc::new(identity::Identity::load_or_create()?);
+            let trust = Store::load();
+            let target =
+                client::Target::resolve(cfg, &trust, &peer, code.as_deref(), password.as_deref())?;
+            if dry_run {
+                for row in client::plan_push(&target, me, &paths, &to).await? {
+                    let state = if row.up_to_date() {
+                        "up to date"
+                    } else {
+                        "would send"
+                    };
+                    println!(
+                        "{state}\t{}\tlocal={} remote={}",
+                        row.remote, row.local_size, row.remote_size
+                    );
+                }
+                return Ok(());
+            }
+            let plan = client::Plan {
+                parallel: parallel.unwrap_or(cfg.parallel).max(1),
+                resume: !no_resume,
+                verify,
+            };
+            for line in client::push(&target, me.clone(), &paths, &to, plan).await? {
+                println!("pushed {line}");
+            }
+            if trust_after {
+                offer_trust(&target, &me, cfg.port, &trust_expires, &core("push")?).await?;
+            }
+            Ok(())
+        }
+        Cmd::Pull {
+            peer,
+            paths,
+            to,
+            code,
+            password,
+            parallel,
+            no_resume,
+            trust_after,
+            trust_expires,
+        } => {
+            let me = Arc::new(identity::Identity::load_or_create()?);
+            let trust = Store::load();
+            let target =
+                client::Target::resolve(cfg, &trust, &peer, code.as_deref(), password.as_deref())?;
+            let plan = client::Plan {
+                parallel: parallel.unwrap_or(cfg.parallel).max(1),
+                resume: !no_resume,
+                verify: true,
+            };
+            for line in client::pull(&target, me.clone(), &paths, &to, plan).await? {
+                println!("pulled {line}");
+            }
+            if trust_after {
+                offer_trust(&target, &me, cfg.port, &trust_expires, &core("pull")?).await?;
+            }
+            Ok(())
+        }
