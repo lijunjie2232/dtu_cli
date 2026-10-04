@@ -550,3 +550,56 @@ async fn run(cmd: Cmd, daemon: Option<&embed::Daemon>, cfg: &Config) -> Result<(
     }
 }
 
+/// Spec: "once the temporary transfer completes, offer to trust this device".
+/// `port` is our listening port: it lets the peer keep a dialable address for us.
+async fn offer_trust(
+    target: &client::Target,
+    me: &identity::Identity,
+    port: u16,
+    expires: &str,
+    st: &Arc<dtu_core::State>,
+) -> Result<(), String> {
+    if target.is_trusted() {
+        return Ok(());
+    }
+    let Some(peer) = target.peer_id().await else {
+        return Ok(());
+    };
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        println!(
+            "peer {peer} is still untrusted; run: dtu device add {} --expires {expires}",
+            target.addr
+        );
+        return Ok(());
+    }
+    print!("trust {peer} permanently? [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| e.to_string())?;
+    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        println!("kept as temporary access");
+        return Ok(());
+    }
+
+    let mut store = st.trust.lock().await;
+    let expires_at = cfg::parse_expiry(expires)?;
+    let note = Some("approved after a temporary transfer".to_string());
+    let paired = client::invite_send(
+        &target.addr,
+        expires_at,
+        note,
+        me,
+        &mut store,
+        port,
+        |id, from| {
+            println!("pending id {id} — accept it on {from} with: dtu invite accept {id}");
+        },
+    )
+    .await?;
+    println!("trusted {paired}");
+    Ok(())
+}
+
