@@ -699,3 +699,39 @@ async fn device_cmd(sub: DeviceCmd, cfg: &Config, st: Arc<dtu_core::State>) -> R
     }
 }
 
+async fn invite_cmd(sub: InviteCmd, cfg: &Config, st: Arc<dtu_core::State>) -> Result<(), String> {
+    match sub {
+        InviteCmd::Send {
+            target,
+            expires,
+            note,
+            alias,
+            wait,
+        } => send_invite(&target, &expires, note, alias.as_deref(), wait, cfg, &st).await,
+        InviteCmd::List => {
+            let items = invite::list(&st).await;
+            if items.is_empty() {
+                println!("no pending invitations");
+            }
+            for i in items {
+                println!(
+                    "{} from {} at {} (requested expiry {})",
+                    i.id, i.from, i.addr, i.expires_at
+                );
+            }
+            Ok(())
+        }
+        InviteCmd::Accept { id, expires } => {
+            let expires_at = cfg::parse_expiry(&expires)?;
+            invite::decide(&st, &id, Decision::Accept { expires_at }).await?;
+            println!("accepted invite {id}");
+            Ok(())
+        }
+        InviteCmd::Deny { id } => {
+            invite::decide(&st, &id, Decision::Deny).await?;
+            println!("denied invite {id}");
+            Ok(())
+        }
+    }
+}
+
