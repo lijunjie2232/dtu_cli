@@ -830,3 +830,16 @@ mod cli_tests {
         }
     }
 
+    #[test]
+    fn the_shell_splitter_keeps_quoted_paths_together() {
+        assert_eq!(
+            split_args("push peer a b.txt --to x").unwrap(),
+            vec!["push", "peer", "a", "b.txt", "--to", "x"]
+        );
+        assert_eq!(
+            split_args("push peer \"a b.txt\" --to 'c d'").unwrap(),
+            vec!["push", "peer", "a b.txt", "--to", "c d"]
+        );
+        assert!(split_args("push \"unterminated").is_err());
+    }
+}
