@@ -603,3 +603,99 @@ async fn offer_trust(
     Ok(())
 }
 
+async fn device_cmd(sub: DeviceCmd, cfg: &Config, st: Arc<dtu_core::State>) -> Result<(), String> {
+    match sub {
+        DeviceCmd::Scan { wait, filter } => {
+            let trust = st.trust.lock().await.clone();
+            let items = discover::scan(cfg.port, wait, &st.id.id, &trust).await;
+            let mut shown = 0;
+            for s in items {
+                if let Some(f) = &filter {
+                    if !s.id.contains(f.as_str()) && !s.addr.contains(f.as_str()) {
+                        continue;
+                    }
+                }
+                println!(
+                    "{:<24} {:<24} {}",
+                    s.id,
+                    s.addr,
+                    if s.trusted { "trusted" } else { "" }
+                );
+                shown += 1;
+            }
+            println!("{shown} device(s)");
+            Ok(())
+        }
+        DeviceCmd::List => {
+            let trust = st.trust.lock().await.clone();
+            if trust.devices.is_empty() {
+                println!("no trusted devices");
+            }
+            for (id, d) in &trust.devices {
+                let expires = if d.expires_at == 0 {
+                    "never".to_string()
+                } else {
+                    audit::iso(d.expires_at)
+                };
+                let live = if trust.get(id).is_some() {
+                    ""
+                } else {
+                    " [expired]"
+                };
+                println!(
+                    "{:<24} {:<16} {:<24} expires {expires}{live}",
+                    id,
+                    d.alias.as_deref().unwrap_or("-"),
+                    d.addr.clone().unwrap_or_else(|| "-".into())
+                );
+            }
+            Ok(())
+        }
+        DeviceCmd::Add {
+            target,
+            expires,
+            note,
+            alias,
+        } => send_invite(&target, &expires, note, alias.as_deref(), 600, cfg, &st).await,
+        DeviceCmd::Alias { device, name } => {
+            let mut trust = st.trust.lock().await;
+            let id = trust
+                .resolve(&device)
+                .map(|(id, _)| id.to_string())
+                .ok_or_else(|| format!("no such device or alias: {device}"))?;
+            match name {
+                None => {
+                    let alias = trust.devices.get(&id).and_then(|d| d.alias.clone());
+                    println!("{}", alias.unwrap_or_else(|| "(none)".into()));
+                }
+                Some(name) => {
+                    trust.set_alias(&id, Some(&name))?;
+                    trust.save()?;
+                    println!(
+                        "{id} {}",
+                        match trust.devices.get(&id).and_then(|d| d.alias.as_deref()) {
+                            Some(a) => format!("is now {a}"),
+                            None => "alias cleared".to_string(),
+                        }
+                    );
+                }
+            }
+            Ok(())
+        }
+        DeviceCmd::Rm { id } => {
+            let mut trust = st.trust.lock().await;
+            let id = trust
+                .resolve(&id)
+                .map(|(id, _)| id.to_string())
+                .unwrap_or(id);
+            if trust.remove(&id) {
+                trust.save()?;
+                println!("removed {id}");
+                Ok(())
+            } else {
+                Err(format!("no such device: {id}"))
+            }
+        }
+    }
+}
+
