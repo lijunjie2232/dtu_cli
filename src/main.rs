@@ -735,3 +735,75 @@ async fn invite_cmd(sub: InviteCmd, cfg: &Config, st: Arc<dtu_core::State>) -> R
     }
 }
 
+async fn send_invite(
+    target: &str,
+    expires: &str,
+    note: Option<String>,
+    alias: Option<&str>,
+    wait: u64,
+    cfg: &Config,
+    st: &Arc<dtu_core::State>,
+) -> Result<(), String> {
+    let me = identity::Identity::load_or_create()?;
+    // The live store: pairing must be visible to the listener in this same process.
+    let mut trust = st.trust.lock().await;
+    let addr = client::normalize_addr(target, cfg.port);
+    let expires_at = cfg::parse_expiry(expires)?;
+    println!("inviting {addr} ...");
+    let invite = client::invite_send(
+        &addr,
+        expires_at,
+        note,
+        &me,
+        &mut trust,
+        cfg.port,
+        |id, peer| {
+            println!("pending id {id} — accept it on {peer} with: dtu invite accept {id}");
+        },
+    );
+    let peer = if wait == 0 {
+        invite.await
+    } else {
+        match tokio::time::timeout(std::time::Duration::from_secs(wait), invite).await {
+            Ok(r) => r,
+            Err(_) => {
+                return Err(format!(
+                    "no answer after {wait}s; the invitation may still be waiting on the peer (dtu invite list)"
+                ))
+            }
+        }
+    }?;
+    if let Some(a) = alias {
+        trust
+            .set_alias(&peer, Some(a))
+            .map_err(|e| format!("paired with {peer}, but {e}"))?;
+        trust.save()?;
+    }
+    match trust.get(&peer) {
+        Some(d) => {
+            let exp = if d.expires_at == 0 {
+                "never".to_string()
+            } else {
+                audit::iso(d.expires_at)
+            };
+            match &d.alias {
+                Some(a) => println!("paired with {peer} as {a} (expires {exp})"),
+                None => println!("paired with {peer} (expires {exp})"),
+            }
+            Ok(())
+        }
+        None => Err("handshake finished but no trust recorded".into()),
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn script(shell: clap_complete::Shell) -> String {
+        let mut cmd = Cli::command();
+        let mut out = Vec::new();
+        clap_complete::generate(shell, &mut cmd, "dtu", &mut out);
+        String::from_utf8(out).expect("completion script is utf-8")
+    }
+
