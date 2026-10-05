@@ -807,3 +807,26 @@ mod cli_tests {
         String::from_utf8(out).expect("completion script is utf-8")
     }
 
+    #[test]
+    fn every_shell_gets_a_usable_script() {
+        for shell in [
+            clap_complete::Shell::Bash,
+            clap_complete::Shell::Zsh,
+            clap_complete::Shell::Fish,
+            clap_complete::Shell::PowerShell,
+        ] {
+            let text = script(shell);
+            assert!(
+                text.len() > 500,
+                "{shell:?} script looks empty: {} bytes",
+                text.len()
+            );
+            for command in ["push", "pull", "async", "device", "invite", "completions"] {
+                assert!(
+                    text.contains(command),
+                    "{shell:?} script is missing {command}"
+                );
+            }
+        }
+    }
+
